@@ -15,7 +15,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.api import jobs, download
 from app.services.redis_service import redis_service
-from app.config import settings
 
 # Configure logging
 logging.basicConfig(
@@ -31,10 +30,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting AI Dubbing Studio Backend on Vercel")
     
     # Test Redis connection (optional for serverless)
-    if await redis_service.health_check():
-        logger.info("Redis connection established")
-    else:
-        logger.warning("Redis connection failed - running without cache")
+    try:
+        if await redis_service.health_check():
+            logger.info("Redis connection established")
+        else:
+            logger.warning("Redis connection failed - running without cache")
+    except Exception as e:
+        logger.warning(f"Redis initialization error: {e}")
     
     yield
     
@@ -44,7 +46,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="AI Dubbing Studio API",
-    description="Asynchronous AI dubbing pipeline using FastAPI, external AI APIs",
+    description="Asynchronous AI dubbing pipeline - Vercel Deployment",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -83,7 +85,8 @@ async def root():
         "description": "Asynchronous AI dubbing pipeline",
         "docs": "/docs",
         "status": "running",
-        "environment": "production"
+        "environment": "production",
+        "platform": "vercel"
     }
 
 @app.get("/health", tags=["Health"])
@@ -100,11 +103,17 @@ async def health_check():
     }
     
     # Check Redis (optional)
-    redis_healthy = await redis_service.health_check()
-    health_status["services"]["redis"] = {
-        "status": "healthy" if redis_healthy else "unavailable",
-        "note": "Redis is optional for Vercel deployment"
-    }
+    try:
+        redis_healthy = await redis_service.health_check()
+        health_status["services"]["redis"] = {
+            "status": "healthy" if redis_healthy else "unavailable",
+            "note": "Redis is optional for Vercel deployment"
+        }
+    except Exception as e:
+        health_status["services"]["redis"] = {
+            "status": "unavailable",
+            "note": "Redis is optional for Vercel deployment"
+        }
     
     # Database check (simplified for serverless)
     health_status["services"]["database"] = {
@@ -154,9 +163,12 @@ async def api_info():
         "deployment": {
             "platform": "Vercel",
             "region": "auto",
-            "serverless": true
+            "serverless": True,
+            "auto_scaling": True
         }
     }
 
-# Vercel handler
-handler = app
+# Export for Vercel
+def handler(event, context):
+    """Vercel handler function"""
+    return app
