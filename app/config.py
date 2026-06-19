@@ -3,25 +3,25 @@ from typing import Optional
 import os
 
 class Settings(BaseSettings):
-    # Database - Use PostgreSQL for Vercel (Railway, Neon, or Supabase)
-    database_url: str = "sqlite:///./dubbing_studio.db"
-    redis_url: str = "redis://localhost:6379"
-    secret_key: str = "ai-dubbing-studio-secret-key-2024"
+    # Database - Optional for Vercel deployment, defaults to SQLite
+    database_url: str = "sqlite+aiosqlite:///tmp/dubbing_studio.db"
+    redis_url: Optional[str] = None  # Optional for Vercel
+    secret_key: str = "default-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
-    # AI Service API Keys
-    openai_api_key: str = "your-openai-key-here"
-    elevenlabs_api_key: str = "your-elevenlabs-key-here"
-    gemini_api_key: str = "your-gemini-key-here"
-    groq_api_key: str = "your-groq-key-here"
+    # AI Service API Keys - Required
+    openai_api_key: str = "not-set"
+    elevenlabs_api_key: str = "not-set"
+    gemini_api_key: str = "not-set"
+    groq_api_key: str = "not-set"
     
-    # File Storage - Use Vercel blob storage or external service
-    upload_dir: str = "/tmp"  # Vercel temp directory
+    # File Storage - Use Vercel's temp directory
+    upload_dir: str = "/tmp/uploads"  # Vercel temp directory
     max_file_size: int = 50 * 1024 * 1024  # 50MB for serverless
-    temp_dir: str = "/tmp"
+    temp_dir: str = "/tmp/temp"
     
-    # Processing Settings 
+    # Processing Settings - Limited for serverless
     chunk_size: int = 8192
     max_workers: int = 2  # Limited for serverless
     

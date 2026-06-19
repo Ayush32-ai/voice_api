@@ -29,6 +29,14 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting AI Dubbing Studio Backend on Vercel")
     
+    # Initialize database (create tables if needed)
+    try:
+        from app.database import create_tables
+        await create_tables()
+        logger.info("Database initialization completed")
+    except Exception as e:
+        logger.warning(f"Database initialization failed: {e}")
+    
     # Test Redis connection (optional for serverless)
     try:
         if await redis_service.health_check():
