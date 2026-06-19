@@ -77,7 +77,7 @@ async def create_dubbing_job(
         await db.refresh(job)
         
         # Detach from session before Pydantic validation
-        await db.expunge(job)
+        db.expunge(job)
         
         # Start background processing - development mode
         try:
@@ -126,7 +126,7 @@ async def list_jobs(
         
         # Detach all jobs from session before Pydantic validation
         for job in jobs:
-            await db.expunge(job)
+            db.expunge(job)
         
         job_responses = [JobResponse.model_validate(job) for job in jobs]
         
@@ -156,7 +156,7 @@ async def get_job(
             raise HTTPException(status_code=404, detail="Job not found")
         
         # Detach from session before Pydantic validation
-        await db.expunge(job)
+        db.expunge(job)
         
         return JobResponse.model_validate(job)
     
@@ -236,7 +236,7 @@ async def cancel_job(
             raise HTTPException(status_code=404, detail="Job not found")
         
         # Detach from session before Pydantic validation
-        await db.expunge(job)
+        db.expunge(job)
         
         logger.info(f"Cancelled job {job_id}")
         return JobResponse.model_validate(job)

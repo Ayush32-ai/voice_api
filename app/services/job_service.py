@@ -43,7 +43,7 @@ class JobService:
             )
             
             # Detach from session before Pydantic validation
-            await db.expunge(job)
+            db.expunge(job)
             
             # Cache job in Redis
             try:
@@ -71,7 +71,7 @@ class JobService:
             job = await self._get_job_from_db(db, job_id)
             if job:
                 # Detach from session before Pydantic validation
-                await db.expunge(job)
+                db.expunge(job)
                 try:
                     await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
                 except Exception as cache_err:
@@ -146,7 +146,7 @@ class JobService:
             await db.refresh(job)
             
             # Detach from session before Pydantic validation
-            await db.expunge(job)
+            db.expunge(job)
             
             # Update Redis cache
             try:
@@ -184,7 +184,7 @@ class JobService:
             await db.refresh(job)
             
             # Detach from session before Pydantic validation
-            await db.expunge(job)
+            db.expunge(job)
             
             # Update Redis cache
             try:
@@ -261,7 +261,7 @@ class JobService:
             await db.refresh(job)
             
             # Detach from session before Pydantic validation
-            await db.expunge(job)
+            db.expunge(job)
             
             # Update Redis cache
             try:
