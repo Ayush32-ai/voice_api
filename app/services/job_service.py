@@ -42,9 +42,6 @@ class JobService:
                 f"Job created: {job_data.title}", "INFO"
             )
             
-            # Detach from session before Pydantic validation
-            db.expunge(job)
-            
             # Cache job in Redis
             try:
                 await self.redis_service.cache_job(job.id, JobResponse.model_validate(job))
@@ -70,8 +67,6 @@ class JobService:
             # Fallback to database
             job = await self._get_job_from_db(db, job_id)
             if job:
-                # Detach from session before Pydantic validation
-                db.expunge(job)
                 try:
                     await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
                 except Exception as cache_err:
@@ -145,9 +140,6 @@ class JobService:
             await db.commit()
             await db.refresh(job)
             
-            # Detach from session before Pydantic validation
-            db.expunge(job)
-            
             # Update Redis cache
             try:
                 await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
@@ -183,16 +175,7 @@ class JobService:
             await db.commit()
             await db.refresh(job)
             
-            # Detach from session before Pydantic validation
-            db.expunge(job)
-            
             # Update Redis cache
-            try:
-                await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
-            except Exception as cache_err:
-                logger.warning(f"Failed to cache retry count: {cache_err}")
-            
-            logger.info(f"Incremented retry count for job {job_id}: {job.retry_count}")
             return job
         
         except Exception as e:
@@ -259,9 +242,6 @@ class JobService:
             
             await db.commit()
             await db.refresh(job)
-            
-            # Detach from session before Pydantic validation
-            db.expunge(job)
             
             # Update Redis cache
             try:
