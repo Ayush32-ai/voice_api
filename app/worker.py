@@ -1,9 +1,18 @@
-from celery import Celery
 import asyncio
 import logging
 import uuid
 from pathlib import Path
 import json
+
+# Try to import Celery - optional for serverless deployments
+try:
+    from celery import Celery
+    CELERY_INSTALLED = True
+except ImportError:
+    CELERY_INSTALLED = False
+    Celery = None
+    logger = logging.getLogger(__name__)
+    logger.warning("Celery not installed - background workers unavailable")
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -19,30 +28,36 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create Celery app (optional for development)
-try:
-    celery_app = Celery(
-        "dubbing_worker",
-        broker=settings.redis_url,
-        backend=settings.redis_url
-    )
+celery_app = None
+CELERY_AVAILABLE = False
 
-    # Celery configuration
-    celery_app.conf.update(
-        task_serializer="json",
-        accept_content=["json"],
-        result_serializer="json",
-        timezone="UTC",
-        enable_utc=True,
-        task_track_started=True,
-        task_time_limit=1800,  # 30 minutes
-        task_soft_time_limit=1500,  # 25 minutes
-        worker_prefetch_multiplier=1,
-    )
-    CELERY_AVAILABLE = True
-except Exception as e:
-    logger.warning(f"Celery not available: {e}")
-    celery_app = None
-    CELERY_AVAILABLE = False
+if CELERY_INSTALLED and Celery is not None:
+    try:
+        celery_app = Celery(
+            "dubbing_worker",
+            broker=settings.redis_url,
+            backend=settings.redis_url
+        )
+
+        # Celery configuration
+        celery_app.conf.update(
+            task_serializer="json",
+            accept_content=["json"],
+            result_serializer="json",
+            timezone="UTC",
+            enable_utc=True,
+            task_track_started=True,
+            task_time_limit=1800,  # 30 minutes
+            task_soft_time_limit=1500,  # 25 minutes
+            worker_prefetch_multiplier=1,
+        )
+        CELERY_AVAILABLE = True
+    except Exception as e:
+        logger.warning(f"Celery not available: {e}")
+        celery_app = None
+        CELERY_AVAILABLE = False
+else:
+    logger.info("Celery disabled - using async processing only")
 
 # Services
 job_service = JobService(redis_service)
@@ -64,6 +79,16 @@ if CELERY_AVAILABLE:
             return result
         finally:
             loop.close()
+else:
+    # Fallback for when Celery is not available
+    class ProcessDubbingJobFallback:
+        """Fallback class that mimics Celery task interface"""
+        def delay(self, job_id_str: str):
+            """Fallback for Celery's delay method - just logs"""
+            logger.info(f"Would process job {job_id_str} (Celery unavailable - use async)")
+            return None
+    
+    process_dubbing_job = ProcessDubbingJobFallback()
 
 # Sync processing for development
 async def process_dubbing_job_sync(job_id_str: str):
