@@ -63,6 +63,9 @@ class RedisService:
         """Get cached job data from Redis"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return None  # Redis not available
+                
             key = f"job:{job_id}"
             
             job_json = await client.get(key)
@@ -80,6 +83,9 @@ class RedisService:
         """Remove job from cache"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return  # Redis not available
+                
             key = f"job:{job_id}"
             await client.delete(key)
         
@@ -91,6 +97,9 @@ class RedisService:
         """Set job progress in Redis for real-time updates"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return  # Redis not available
+                
             key = f"job:progress:{job_id}"
             
             progress_data = {
@@ -108,6 +117,9 @@ class RedisService:
         """Get current job progress from Redis"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return None  # Redis not available
+                
             key = f"job:progress:{job_id}"
             
             progress_json = await client.get(key)
@@ -125,6 +137,9 @@ class RedisService:
         """Cache job log entries in Redis (recent logs only)"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return  # Redis not available
+                
             key = f"job:logs:{job_id}"
             
             log_data = {
@@ -152,6 +167,9 @@ class RedisService:
         """Get cached job logs from Redis"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return []  # Redis not available
+                
             key = f"job:logs:{job_id}"
             
             log_entries = await client.lrange(key, 0, limit - 1)
@@ -172,6 +190,8 @@ class RedisService:
         """Check if rate limit is exceeded"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return True  # Allow on Redis unavailable
             
             current_count = await client.get(f"rate_limit:{key}")
             
@@ -194,6 +214,9 @@ class RedisService:
         """Check Redis connection health"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return False  # Redis not available
+                
             await client.ping()
             return True
         
@@ -206,6 +229,9 @@ class RedisService:
         """Increment a counter in Redis"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return 0  # Redis not available
+                
             key = f"counter:{counter_name}"
             
             count = await client.incr(key)
@@ -222,6 +248,9 @@ class RedisService:
         """Get counter value from Redis"""
         try:
             client = await self.get_redis_client()
+            if client is None:
+                return 0  # Redis not available
+                
             key = f"counter:{counter_name}"
             
             count = await client.get(key)
