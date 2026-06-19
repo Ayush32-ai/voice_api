@@ -1,0 +1,46 @@
+# Vercel ignore file
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
+
+# Local development files
+.env
+.env.local
+dubbing_studio.db
+uploads/
+temp/
+logs/
+node_modules/
+.DS_Store
+
+# Development specific
+run_dev.py
+start_server.py
+start_worker.py
+test_simple.py
+test_api.py
+start_all.bat
+
+# Documentation
+README.md
+DEPLOYMENT_STATUS.md
+SETUP_COMPLETE.md

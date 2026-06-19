@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ],
+  "env": {
+    "PYTHONPATH": ".",
+    "DATABASE_URL": "@database_url",
+    "REDIS_URL": "@redis_url",
+    "SECRET_KEY": "@secret_key",
+    "ELEVENLABS_API_KEY": "@elevenlabs_api_key",
+    "GROQ_API_KEY": "@groq_api_key",
+    "GEMINI_API_KEY": "@gemini_api_key",
+    "OPENAI_API_KEY": "@openai_api_key"
+  },
+  "functions": {
+    "main.py": {
+      "maxDuration": 300
+    }
+  }
+}
