@@ -42,8 +42,14 @@ class JobService:
                 f"Job created: {job_data.title}", "INFO"
             )
             
+            # Detach from session before Pydantic validation
+            await db.expunge(job)
+            
             # Cache job in Redis
-            await self.redis_service.cache_job(job.id, JobResponse.model_validate(job))
+            try:
+                await self.redis_service.cache_job(job.id, JobResponse.model_validate(job))
+            except Exception as cache_err:
+                logger.warning(f"Failed to cache job: {cache_err}")
             
             logger.info(f"Created job {job.id}: {job_data.title}")
             return job
@@ -64,7 +70,12 @@ class JobService:
             # Fallback to database
             job = await self._get_job_from_db(db, job_id)
             if job:
-                await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+                # Detach from session before Pydantic validation
+                await db.expunge(job)
+                try:
+                    await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+                except Exception as cache_err:
+                    logger.warning(f"Failed to cache job: {cache_err}")
             
             return job
         
@@ -134,8 +145,14 @@ class JobService:
             await db.commit()
             await db.refresh(job)
             
+            # Detach from session before Pydantic validation
+            await db.expunge(job)
+            
             # Update Redis cache
-            await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            try:
+                await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            except Exception as cache_err:
+                logger.warning(f"Failed to cache job progress: {cache_err}")
             
             # Log progress update
             await self.add_job_log(
@@ -166,8 +183,14 @@ class JobService:
             await db.commit()
             await db.refresh(job)
             
+            # Detach from session before Pydantic validation
+            await db.expunge(job)
+            
             # Update Redis cache
-            await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            try:
+                await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            except Exception as cache_err:
+                logger.warning(f"Failed to cache retry count: {cache_err}")
             
             logger.info(f"Incremented retry count for job {job_id}: {job.retry_count}")
             return job
@@ -193,7 +216,7 @@ class JobService:
                 step=step,
                 message=message,
                 level=level,
-                metadata_json=metadata
+                metadata_json=metadata_json
             )
             
             db.add(log_entry)
@@ -237,8 +260,14 @@ class JobService:
             await db.commit()
             await db.refresh(job)
             
+            # Detach from session before Pydantic validation
+            await db.expunge(job)
+            
             # Update Redis cache
-            await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            try:
+                await self.redis_service.cache_job(job_id, JobResponse.model_validate(job))
+            except Exception as cache_err:
+                logger.warning(f"Failed to cache cancelled job: {cache_err}")
             
             # Add cancellation log
             await self.add_job_log(
