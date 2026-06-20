@@ -66,6 +66,8 @@ app.add_middleware(
 # Include API routers
 app.include_router(jobs.router, prefix="/api", tags=["Jobs"])
 app.include_router(download.router, prefix="/api", tags=["Download"])
+# Mobile app uses /download/... without /api prefix
+app.include_router(download.router, tags=["Download (legacy)"])
 
 # Global exception handler
 @app.exception_handler(Exception)
@@ -173,7 +175,9 @@ async def api_info():
         },
         "endpoints": {
             "jobs": "/api/jobs",
-            "download": "/api/download/{job_id}",
+            "download_dubbed": "/download/{job_id}/dubbed",
+            "download_dubbed_short": "/download/{job_id}",
+            "download_api": "/api/download/{job_id}/dubbed",
             "health": "/health",
             "docs": "/docs"
         }

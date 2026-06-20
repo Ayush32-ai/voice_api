@@ -16,6 +16,29 @@ logger = logging.getLogger(__name__)
 
 job_service = JobService(redis_service)
 
+
+def _resolve_final_video_path(job) -> str | None:
+    """Find dubbed video on disk even if stored path is stale."""
+    if job.final_video_path and os.path.exists(job.final_video_path):
+        return job.final_video_path
+
+    if job.file_path:
+        candidate = Path(job.file_path).parent / "final_dubbed_video.mp4"
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
+@router.get("/download/{job_id}")
+async def download_dubbed_video_default(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Download dubbed video (shorthand - used by mobile app)."""
+    return await download_dubbed_video(job_id, db)
+
+
 @router.get("/download/{job_id}/original")
 async def download_original_video(
     job_id: str,
@@ -67,15 +90,19 @@ async def download_dubbed_video(
                 detail="Job not completed yet. Cannot download dubbed video."
             )
         
-        if not job.final_video_path or not os.path.exists(job.final_video_path):
-            raise HTTPException(status_code=404, detail="Dubbed video file not found")
+        final_path = _resolve_final_video_path(job)
+        if not final_path:
+            raise HTTPException(
+                status_code=404,
+                detail="Dubbed video file not found on server. It may have been removed after a redeploy — please re-run the job."
+            )
         
         # Generate filename with language info
         base_name = Path(job.original_filename).stem
         filename = f"{base_name}_dubbed_{job.source_language.value}_to_{job.target_language.value}.mp4"
         
         return FileResponse(
-            path=job.final_video_path,
+            path=final_path,
             filename=filename,
             media_type="video/mp4"
         )
@@ -232,6 +259,15 @@ async def get_download_links(
                 "available": True,
                 "filename": f"{base_name}_dubbed_{job.source_language.value}_to_{job.target_language.value}.mp4"
             }
+        elif job.status == JobStatus.COMPLETED:
+            resolved = _resolve_final_video_path(job)
+            if resolved:
+                base_name = Path(job.original_filename).stem
+                downloads["dubbed_video"] = {
+                    "url": f"{base_url}/dubbed",
+                    "available": True,
+                    "filename": f"{base_name}_dubbed_{job.source_language.value}_to_{job.target_language.value}.mp4"
+                }
         
         return {
             "job_id": str(job_id),

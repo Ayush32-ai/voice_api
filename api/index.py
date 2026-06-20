@@ -73,6 +73,7 @@ app.add_middleware(
 # Include API routers
 app.include_router(jobs.router, prefix="/api", tags=["Jobs"])
 app.include_router(download.router, prefix="/api", tags=["Download"])
+app.include_router(download.router, tags=["Download (legacy)"])
 
 # Global exception handler
 @app.exception_handler(Exception)
