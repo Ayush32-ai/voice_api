@@ -10,11 +10,19 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
-    # AI Service API Keys - Required
+    # AI Service API Keys - optional when using free providers
     openai_api_key: str = "not-set"
     elevenlabs_api_key: str = "not-set"
     gemini_api_key: str = "not-set"
     groq_api_key: str = "not-set"
+
+    # Provider selection: free defaults (no payment required)
+    # tts: gtts (free) | edge | elevenlabs (paid)
+    # translation: google (free) | gemini (free tier with API key)
+    # stt: groq (free tier with API key)
+    tts_provider: str = "gtts"
+    translation_provider: str = "google"
+    stt_provider: str = "groq"
     
     # File Storage
     upload_dir: str = "uploads"

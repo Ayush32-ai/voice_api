@@ -281,14 +281,34 @@ async def _translation_step(db, job, job_id):
         if job.source_language == job.target_language:
             translated_text = original_text
         else:
-            # Use Gemini for translation
-            gemini_provider = AIProviderFactory.get_gemini_provider()
-            translation_result = await gemini_provider.process(
-                original_text,
-                job.source_language.value,
-                job.target_language.value
-            )
-            translated_text = translation_result["translated_text"]
+            result = None
+            last_error = None
+            try:
+                translator = AIProviderFactory.get_translation_provider()
+                translation_result = await translator.process(
+                    original_text,
+                    job.source_language.value,
+                    job.target_language.value,
+                )
+                translated_text = translation_result["translated_text"]
+            except Exception as primary_error:
+                last_error = primary_error
+                logger.warning(
+                    f"Job {job_id}: primary translation failed, trying Gemini fallback: {primary_error}"
+                )
+                if settings.gemini_api_key not in ("", "not-set"):
+                    gemini_provider = AIProviderFactory.get_gemini_provider()
+                    translation_result = await gemini_provider.process(
+                        original_text,
+                        job.source_language.value,
+                        job.target_language.value,
+                    )
+                    translated_text = translation_result["translated_text"]
+                else:
+                    raise primary_error
+
+            if not translated_text:
+                raise last_error or ValueError("Translation returned empty text")
         
         # Save translation
         job_dir = file_service.get_job_directory(job_id)
@@ -321,30 +341,67 @@ async def _translation_step(db, job, job_id):
         raise Exception(f"Translation failed: {str(e)}")
 
 async def _text_to_speech_step(db, job, job_id):
-    """Step 4: Generate speech using ElevenLabs"""
+    """Step 4: Generate speech using free Edge TTS (ElevenLabs optional fallback)"""
     logger.info(f"Job {job_id}: Generating speech")
     
     try:
-        # Get fresh job data
         job = await job_service.get_job(db, job_id)
         
-        # Load translation
         with open(job.translated_text_path, "r", encoding="utf-8") as f:
             translation_data = json.load(f)
         
         translated_text = translation_data["translated_text"]
-        
-        # Generate speech
-        elevenlabs_provider = AIProviderFactory.get_elevenlabs_provider()
-        
+        if not translated_text or not translated_text.strip():
+            raise ValueError("Translated text is empty - cannot generate speech")
+
         job_dir = file_service.get_job_directory(job_id)
         dubbed_audio_path = job_dir / "dubbed_audio.mp3"
-        
-        tts_result = await elevenlabs_provider.process(
-            translated_text,
-            job.target_language.value,
-            str(dubbed_audio_path)
-        )
+
+        try:
+            tts_provider = AIProviderFactory.get_tts_provider()
+            await tts_provider.process(
+                translated_text,
+                job.target_language.value,
+                str(dubbed_audio_path),
+            )
+        except Exception as primary_error:
+            logger.warning(
+                f"Job {job_id}: primary TTS ({settings.tts_provider}) failed: {primary_error}"
+            )
+            tts_errors = [str(primary_error)]
+            succeeded = False
+
+            for fallback_name, provider in [
+                ("gtts", AIProviderFactory.get_gtts_provider()),
+                ("edge", AIProviderFactory.get_edge_tts_provider()),
+            ]:
+                if settings.tts_provider == fallback_name:
+                    continue
+                try:
+                    await provider.process(
+                        translated_text,
+                        job.target_language.value,
+                        str(dubbed_audio_path),
+                    )
+                    logger.info(f"Job {job_id}: TTS succeeded with {fallback_name} fallback")
+                    succeeded = True
+                    break
+                except Exception as fallback_error:
+                    tts_errors.append(f"{fallback_name}: {fallback_error}")
+
+            if not succeeded and settings.elevenlabs_api_key not in ("", "not-set"):
+                try:
+                    await AIProviderFactory.get_elevenlabs_provider().process(
+                        translated_text,
+                        job.target_language.value,
+                        str(dubbed_audio_path),
+                    )
+                    succeeded = True
+                except Exception as eleven_error:
+                    tts_errors.append(f"elevenlabs: {eleven_error}")
+
+            if not succeeded:
+                raise RuntimeError("All TTS providers failed: " + "; ".join(tts_errors))
         
         # Update job
         await job_service.update_job_progress(

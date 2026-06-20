@@ -173,7 +173,7 @@ class GeminiProvider(AIProvider):
                 }
                 
                 response = await client.post(
-                    f"{self.base_url}/models/gemini-pro:generateContent?key={self.api_key}",
+                    f"{self.base_url}/models/gemini-1.5-flash:generateContent?key={self.api_key}",
                     json=payload,
                     headers={"Content-Type": "application/json"}
                 )
@@ -261,6 +261,184 @@ class ElevenLabsProvider(AIProvider):
             logger.error(f"ElevenLabs API error: {str(e)}")
             raise
 
+
+class GoogleTranslateProvider(AIProvider):
+    """Free translation via Google Translate (no API key required)."""
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8)
+    )
+    async def process(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
+        try:
+            from deep_translator import GoogleTranslator
+
+            def translate_sync() -> str:
+                translator = GoogleTranslator(source=source_lang, target=target_lang)
+                # deep-translator handles chunking for long text
+                return translator.translate(text)
+
+            translated_text = await asyncio.to_thread(translate_sync)
+            if not translated_text:
+                raise ValueError("Translation returned empty text")
+
+            logger.info(f"Google Translate completed: {source_lang} -> {target_lang}")
+            return {
+                "translated_text": translated_text.strip(),
+                "source_language": source_lang,
+                "target_language": target_lang,
+            }
+        except Exception as e:
+            logger.error(f"Google Translate error: {str(e)}")
+            raise
+
+
+class GTTSProvider(AIProvider):
+    """Free text-to-speech via Google TTS (no API key required)."""
+
+    SUPPORTED_LANGS = {"en", "hi", "ta"}
+    MAX_CHARS = 4000
+
+    async def _synthesize_chunk(self, text: str, lang: str, output_path: str) -> None:
+        from gtts import gTTS
+
+        def synthesize_sync() -> None:
+            tts = gTTS(text=text, lang=lang, slow=False)
+            tts.save(output_path)
+
+        await asyncio.to_thread(synthesize_sync)
+
+    def _split_text(self, text: str, max_chars: int) -> list[str]:
+        if len(text) <= max_chars:
+            return [text]
+
+        chunks: list[str] = []
+        current = ""
+        for sentence in text.replace("!", ".").replace("?", ".").split("."):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            part = f"{sentence}."
+            if len(current) + len(part) <= max_chars:
+                current += part
+            else:
+                if current:
+                    chunks.append(current.strip())
+                current = part
+        if current:
+            chunks.append(current.strip())
+        return chunks or [text[:max_chars]]
+
+    async def _concat_mp3_files(self, input_paths: list[str], output_path: str) -> None:
+        import shutil
+        import subprocess
+
+        if len(input_paths) == 1:
+            shutil.copy2(input_paths[0], output_path)
+            return
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            shutil.copy2(input_paths[0], output_path)
+            logger.warning("ffmpeg missing; using first TTS chunk only")
+            return
+
+        list_file = output_path + ".txt"
+        with open(list_file, "w", encoding="utf-8") as f:
+            for path in input_paths:
+                f.write(f"file '{path}'\n")
+
+        def concat_sync() -> None:
+            subprocess.run(
+                [ffmpeg, "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", "-y", output_path],
+                check=True,
+                capture_output=True,
+            )
+
+        await asyncio.to_thread(concat_sync)
+        os.remove(list_file)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8)
+    )
+    async def process(self, text: str, language: str, output_path: str) -> Dict[str, Any]:
+        try:
+            lang = language if language in self.SUPPORTED_LANGS else "en"
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+            chunks = self._split_text(text, self.MAX_CHARS)
+            chunk_paths: list[str] = []
+
+            for index, chunk in enumerate(chunks):
+                chunk_path = output_path if len(chunks) == 1 else output_path.replace(".mp3", f"_chunk{index}.mp3")
+                await self._synthesize_chunk(chunk, lang, chunk_path)
+                chunk_paths.append(chunk_path)
+
+            if len(chunk_paths) > 1:
+                await self._concat_mp3_files(chunk_paths, output_path)
+                for path in chunk_paths:
+                    if path != output_path and os.path.exists(path):
+                        os.remove(path)
+
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise ValueError("gTTS produced an empty audio file")
+
+            size = os.path.getsize(output_path)
+            logger.info(f"gTTS completed: {output_path} ({size} bytes, lang={lang})")
+            return {
+                "audio_file_path": output_path,
+                "voice_id": f"gtts-{lang}",
+                "language": language,
+                "text_length": len(text),
+                "audio_size_bytes": size,
+                "provider": "gtts",
+            }
+        except Exception as e:
+            logger.error(f"gTTS error: {str(e)}")
+            raise
+
+
+class EdgeTTSProvider(AIProvider):
+    """Free text-to-speech via Microsoft Edge voices (no API key required)."""
+
+    VOICE_MAP = {
+        "en": "en-US-AriaNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "ta": "ta-IN-PallaviNeural",
+    }
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8)
+    )
+    async def process(self, text: str, language: str, output_path: str) -> Dict[str, Any]:
+        try:
+            import edge_tts
+
+            voice = self.VOICE_MAP.get(language, self.VOICE_MAP["en"])
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(output_path)
+
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise ValueError("Edge TTS produced an empty audio file")
+
+            size = os.path.getsize(output_path)
+            logger.info(f"Edge TTS completed: {output_path} ({size} bytes, voice={voice})")
+            return {
+                "audio_file_path": output_path,
+                "voice_id": voice,
+                "language": language,
+                "text_length": len(text),
+                "audio_size_bytes": size,
+                "provider": "edge-tts",
+            }
+        except Exception as e:
+            logger.error(f"Edge TTS error: {str(e)}")
+            raise
+
 # Provider factory
 class AIProviderFactory:
     """Factory for creating AI service providers"""
@@ -268,9 +446,23 @@ class AIProviderFactory:
     @staticmethod
     def get_whisper_provider(use_groq: bool = True) -> AIProvider:
         """Get Whisper provider - defaults to GROQ for better performance"""
-        if use_groq:
+        if use_groq or settings.stt_provider == "groq":
             return GroqWhisperProvider()
         return WhisperProvider()
+    
+    @staticmethod
+    def get_translation_provider() -> AIProvider:
+        if settings.translation_provider == "gemini" and settings.gemini_api_key not in ("", "not-set"):
+            return GeminiProvider()
+        return GoogleTranslateProvider()
+
+    @staticmethod
+    def get_tts_provider() -> AIProvider:
+        if settings.tts_provider == "elevenlabs" and settings.elevenlabs_api_key not in ("", "not-set"):
+            return ElevenLabsProvider()
+        if settings.tts_provider == "edge":
+            return EdgeTTSProvider()
+        return GTTSProvider()
     
     @staticmethod
     def get_gemini_provider() -> GeminiProvider:
@@ -279,3 +471,11 @@ class AIProviderFactory:
     @staticmethod
     def get_elevenlabs_provider() -> ElevenLabsProvider:
         return ElevenLabsProvider()
+
+    @staticmethod
+    def get_gtts_provider() -> GTTSProvider:
+        return GTTSProvider()
+
+    @staticmethod
+    def get_edge_tts_provider() -> EdgeTTSProvider:
+        return EdgeTTSProvider()
