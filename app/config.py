@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # stt: groq (free tier with API key)
     tts_provider: str = "gtts"
     translation_provider: str = "google"
-    stt_provider: str = "groq"
+    stt_provider: str = "google"
     
     # File Storage
     upload_dir: str = "uploads"

@@ -210,7 +210,14 @@ async def _extract_audio_step(db, job, job_id):
         raise Exception(f"Audio extraction failed: {str(e)}")
 
 async def _speech_to_text_step(db, job, job_id):
-    """Step 2: Convert speech to text using Whisper"""
+    """Step 2: Convert speech to text (free Google STT by default, GROQ optional)"""
+    from app.services.ai_providers import (
+        GroqWhisperProvider,
+        GoogleWebSpeechProvider,
+        WhisperProvider,
+        format_provider_error,
+    )
+
     logger.info(f"Job {job_id}: Converting speech to text")
     
     try:
@@ -222,23 +229,42 @@ async def _speech_to_text_step(db, job, job_id):
             raise FileNotFoundError(f"Extracted audio not found: {job.audio_file_path}")
 
         language_code = job.source_language.value if job.source_language.value != "en" else None
-        result = None
-        last_error = None
 
-        try:
-            groq_provider = AIProviderFactory.get_whisper_provider(use_groq=True)
-            result = await groq_provider.process(job.audio_file_path, language_code)
-        except Exception as groq_error:
-            last_error = groq_error
-            logger.warning(f"Job {job_id}: GROQ Whisper failed, trying OpenAI fallback: {groq_error}")
-            if settings.openai_api_key not in ("", "not-set"):
-                openai_provider = AIProviderFactory.get_whisper_provider(use_groq=False)
-                result = await openai_provider.process(job.audio_file_path, language_code)
-            else:
-                raise groq_error
+        provider_order = {
+            "google": ["google", "groq", "openai"],
+            "groq": ["groq", "google", "openai"],
+            "openai": ["openai", "google", "groq"],
+        }.get(settings.stt_provider, ["google", "groq", "openai"])
+
+        available_providers = {
+            "google": GoogleWebSpeechProvider(),
+            "groq": GroqWhisperProvider(),
+            "openai": WhisperProvider(),
+        }
+
+        errors: list[str] = []
+        result = None
+
+        for name in provider_order:
+            if name == "groq" and settings.groq_api_key in ("", "not-set"):
+                continue
+            if name == "openai" and settings.openai_api_key in ("", "not-set"):
+                continue
+            try:
+                result = await available_providers[name].process(
+                    job.audio_file_path, language_code
+                )
+                logger.info(f"Job {job_id}: Speech-to-text succeeded with {name}")
+                break
+            except Exception as provider_error:
+                msg = format_provider_error(provider_error)
+                errors.append(f"{name}: {msg}")
+                logger.warning(f"Job {job_id}: STT provider {name} failed: {msg}")
 
         if result is None:
-            raise last_error or RuntimeError("Speech-to-text returned no result")
+            raise RuntimeError(
+                "Speech-to-text failed. " + " | ".join(errors)
+            )
         
         # Save transcript
         job_dir = file_service.get_job_directory(job_id)
@@ -261,7 +287,8 @@ async def _speech_to_text_step(db, job, job_id):
         logger.info(f"Job {job_id}: Speech-to-text completed")
     
     except Exception as e:
-        raise Exception(f"Speech-to-text failed: {str(e)}")
+        from app.services.ai_providers import format_provider_error
+        raise Exception(f"Speech-to-text failed: {format_provider_error(e)}")
 
 async def _translation_step(db, job, job_id):
     """Step 3: Translate text using Gemini"""

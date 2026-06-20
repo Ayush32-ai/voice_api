@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
 import asyncio
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_not_exception_type
 from app.config import settings
 import logging
 import json
@@ -12,6 +12,18 @@ from groq import Groq
 logger = logging.getLogger(__name__)
 
 MAX_WHISPER_FILE_BYTES = 24 * 1024 * 1024
+
+def format_provider_error(error: Exception) -> str:
+    """Return the real error instead of a tenacity RetryError wrapper."""
+    try:
+        from tenacity import RetryError
+        if isinstance(error, RetryError) and error.last_attempt.failed:
+            inner = error.last_attempt.exception()
+            if inner:
+                return str(inner)
+    except Exception:
+        pass
+    return str(error)
 
 class AIProvider(ABC):
     """Abstract base class for AI service providers"""
@@ -51,13 +63,18 @@ class GroqWhisperProvider(AIProvider):
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8)
+        wait=wait_exponential(multiplier=1, min=2, max=8),
+        retry=retry_if_not_exception_type((ValueError, FileNotFoundError)),
+        reraise=True,
     )
     async def process(self, audio_file_path: str, language: str = None) -> Dict[str, Any]:
         """Convert audio to text using GROQ Whisper"""
         try:
             if settings.groq_api_key in ("", "not-set"):
-                raise ValueError("GROQ_API_KEY is not configured")
+                raise ValueError(
+                    "GROQ_API_KEY is not configured. Add it in Railway Variables, "
+                    "or set STT_PROVIDER=google for free speech-to-text."
+                )
 
             self._validate_audio_file(audio_file_path)
             transcription = await asyncio.to_thread(
@@ -124,6 +141,110 @@ class WhisperProvider(AIProvider):
         except Exception as e:
             logger.error(f"Whisper API error: {str(e)}")
             raise
+
+
+class GoogleWebSpeechProvider(AIProvider):
+    """Free speech-to-text via Google Web Speech API (no API key required)."""
+
+    LANG_MAP = {
+        "en": "en-US",
+        "hi": "hi-IN",
+        "ta": "ta-IN",
+    }
+    CHUNK_SECONDS = 45
+
+    async def _prepare_wav_chunks(self, audio_path: str) -> tuple[list[str], str, str]:
+        import glob
+        import shutil
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg is required for speech recognition")
+
+        base = audio_path.rsplit(".", 1)[0]
+        wav_path = f"{base}_stt.wav"
+        chunk_dir = f"{base}_chunks"
+        os.makedirs(chunk_dir, exist_ok=True)
+
+        convert = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y", "-i", audio_path, "-ar", "16000", "-ac", "1",
+            "-acodec", "pcm_s16le", wav_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await convert.communicate()
+        if convert.returncode != 0:
+            raise RuntimeError(f"Audio conversion failed: {stderr.decode(errors='replace')}")
+
+        pattern = os.path.join(chunk_dir, "chunk_%03d.wav")
+        segment = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y", "-i", wav_path, "-f", "segment",
+            "-segment_time", str(self.CHUNK_SECONDS), "-acodec", "copy", pattern,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await segment.communicate()
+
+        chunks = sorted(glob.glob(os.path.join(chunk_dir, "chunk_*.wav")))
+        if not chunks:
+            chunks = [wav_path]
+        return chunks, chunk_dir, wav_path
+
+    def _transcribe_chunks_sync(self, chunk_paths: list[str], lang: str) -> str:
+        import speech_recognition as sr
+
+        recognizer = sr.Recognizer()
+        texts: list[str] = []
+
+        for path in chunk_paths:
+            with sr.AudioFile(path) as source:
+                audio = recognizer.record(source)
+            try:
+                text = recognizer.recognize_google(audio, language=lang)
+                if text and text.strip():
+                    texts.append(text.strip())
+            except sr.UnknownValueError:
+                logger.warning(f"No speech detected in chunk: {path}")
+            except sr.RequestError as exc:
+                raise RuntimeError(f"Google Speech API unavailable: {exc}") from exc
+
+        combined = " ".join(texts).strip()
+        if not combined:
+            raise ValueError(
+                "No speech could be recognized. Use a video with clear audio, "
+                "or add GROQ_API_KEY for better transcription."
+            )
+        return combined
+
+    async def process(self, audio_file_path: str, language: str = None) -> Dict[str, Any]:
+        if not os.path.exists(audio_file_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
+        if os.path.getsize(audio_file_path) == 0:
+            raise ValueError("Audio file is empty after extraction")
+
+        lang = self.LANG_MAP.get(language, "en-US") if language else "en-US"
+        chunks, chunk_dir, wav_path = await self._prepare_wav_chunks(audio_file_path)
+
+        try:
+            text = await asyncio.to_thread(self._transcribe_chunks_sync, chunks, lang)
+        finally:
+            import shutil
+            if os.path.isdir(chunk_dir):
+                shutil.rmtree(chunk_dir, ignore_errors=True)
+            if os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+
+        logger.info(f"Google Web Speech transcription completed for {audio_file_path}")
+        return {
+            "text": text,
+            "segments": [],
+            "duration": 0,
+            "provider": "google-web-speech",
+        }
+
 
 class GeminiProvider(AIProvider):
     """Google Gemini API for translation"""
@@ -445,10 +566,17 @@ class AIProviderFactory:
     
     @staticmethod
     def get_whisper_provider(use_groq: bool = True) -> AIProvider:
-        """Get Whisper provider - defaults to GROQ for better performance"""
-        if use_groq or settings.stt_provider == "groq":
+        if settings.stt_provider == "google":
+            return GoogleWebSpeechProvider()
+        if settings.stt_provider == "openai":
+            return WhisperProvider()
+        if settings.groq_api_key not in ("", "not-set"):
             return GroqWhisperProvider()
-        return WhisperProvider()
+        return GoogleWebSpeechProvider()
+
+    @staticmethod
+    def get_google_speech_provider() -> GoogleWebSpeechProvider:
+        return GoogleWebSpeechProvider()
     
     @staticmethod
     def get_translation_provider() -> AIProvider:

@@ -21,3 +21,4 @@ celery==5.3.4
 gTTS==2.5.4
 deep-translator==1.11.4
 edge-tts==6.1.12
+SpeechRecognition==3.10.4

@@ -162,7 +162,7 @@ async def api_info():
             "MP4", "AVI", "MOV", "MKV", "WebM"
         ],
         "ai_providers": {
-            "speech_to_text": ["GROQ Whisper (free tier)"],
+            "speech_to_text": ["Google Web Speech (free)", "GROQ Whisper (optional free tier)"],
             "translation": ["Google Translate (free)", "Google Gemini (optional)"],
             "text_to_speech": ["Google gTTS (free)", "Edge TTS (free)", "ElevenLabs (optional paid)"]
         },
