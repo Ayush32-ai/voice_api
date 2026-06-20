@@ -76,21 +76,19 @@ async def create_dubbing_job(
         await db.commit()
         await db.refresh(job)
         
-        # Start background processing - development mode
+        # Start background processing in-process (Railway runs a single web container)
         try:
-            # Import here to avoid circular imports
             import asyncio
             from app.worker import process_dubbing_job_sync, CELERY_AVAILABLE, process_dubbing_job
-            
-            if CELERY_AVAILABLE:
-                # Use Celery if available
+
+            if settings.use_celery_worker and CELERY_AVAILABLE:
                 process_dubbing_job.delay(str(job.id))
+                logger.info(f"Queued job {job.id} to Celery worker")
             else:
-                # Use async task for development
                 asyncio.create_task(process_dubbing_job_sync(str(job.id)))
-                
+                logger.info(f"Started in-process dubbing for job {job.id}")
         except Exception as e:
-            logger.warning(f"Failed to start job processing: {e}")
+            logger.error(f"Failed to start job processing: {e}")
             # Job will remain in PENDING state
         
         logger.info(f"Created dubbing job {job.id}: {title}")

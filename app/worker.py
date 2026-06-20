@@ -92,13 +92,20 @@ else:
 
 # Sync processing for development
 async def process_dubbing_job_sync(job_id_str: str):
-    """Synchronous job processing for development"""
+    """In-process async job processing (used on Railway / single-container deploys)."""
     try:
-        job_id = uuid.UUID(job_id_str)
         return await _process_dubbing_job_async(job_id_str)
     except Exception as e:
         logger.error(f"Error in sync job processing: {e}")
         raise
+
+async def _schedule_job_retry(job_id: str, countdown: int = 60):
+    """Retry a failed job using Celery or in-process async."""
+    if settings.use_celery_worker and CELERY_AVAILABLE:
+        process_dubbing_job.apply_async(args=[str(job_id)], countdown=countdown)
+    else:
+        await asyncio.sleep(countdown)
+        await process_dubbing_job_sync(str(job_id))
 
 async def _process_dubbing_job_async(job_id: str):
     """Async function to process dubbing job"""
@@ -170,10 +177,10 @@ async def _process_dubbing_job_async(job_id: str):
             # Check if we should retry
             await job_service.increment_retry_count(db, job_id)
             
-            if job.retry_count < job.max_retries:
-                logger.info(f"Retrying job {job_id} (attempt {job.retry_count + 1})")
-                # Schedule retry (delayed)
-                process_dubbing_job.apply_async(args=[str(job_id)], countdown=60)
+            updated_job = await job_service.get_job(db, job_id)
+            if updated_job and updated_job.retry_count < updated_job.max_retries:
+                logger.info(f"Retrying job {job_id} (attempt {updated_job.retry_count + 1})")
+                await _schedule_job_retry(job_id, countdown=60)
             
             raise
 

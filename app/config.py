@@ -16,14 +16,16 @@ class Settings(BaseSettings):
     gemini_api_key: str = "not-set"
     groq_api_key: str = "not-set"
     
-    # File Storage - Use Vercel's temp directory
-    upload_dir: str = "/tmp/uploads"  # Vercel temp directory
-    max_file_size: int = 50 * 1024 * 1024  # 50MB for serverless
-    temp_dir: str = "/tmp/temp"
+    # File Storage
+    upload_dir: str = "uploads"
+    max_file_size: int = 100 * 1024 * 1024  # 100MB
+    temp_dir: str = "temp"
     
-    # Processing Settings - Limited for serverless
+    # Processing Settings
     chunk_size: int = 8192
-    max_workers: int = 2  # Limited for serverless
+    max_workers: int = 4
+    # Only enable when running a separate Celery worker process
+    use_celery_worker: bool = False
     
     class Config:
         env_file = ".env"
