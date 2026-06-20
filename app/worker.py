@@ -3,6 +3,7 @@ import logging
 import uuid
 from pathlib import Path
 import json
+import os
 
 # Try to import Celery - optional for serverless deployments
 try:
@@ -163,13 +164,13 @@ async def _process_dubbing_job_async(job_id: str):
         except Exception as e:
             logger.error(f"Error processing job {job_id}: {str(e)}")
             
-            # Mark job as failed
+            failed_job = await job_service.get_job(db, job_id)
             await job_service.update_job_progress(
                 db, job_id,
                 JobProgressUpdate(
                     status=JobStatus.FAILED,
-                    current_step=job.current_step,
-                    progress_percentage=job.progress_percentage,
+                    current_step=failed_job.current_step if failed_job else job.current_step,
+                    progress_percentage=failed_job.progress_percentage if failed_job else job.progress_percentage,
                     error_message=str(e)
                 )
             )
@@ -213,14 +214,31 @@ async def _speech_to_text_step(db, job, job_id):
     logger.info(f"Job {job_id}: Converting speech to text")
     
     try:
-        # Get fresh job data with audio path
         job = await job_service.get_job(db, job_id)
-        
-        # Use Whisper for speech-to-text
-        whisper_provider = AIProviderFactory.get_whisper_provider()
-        
+        if not job or not job.audio_file_path:
+            raise ValueError("Audio file path missing after extraction step")
+
+        if not os.path.exists(job.audio_file_path):
+            raise FileNotFoundError(f"Extracted audio not found: {job.audio_file_path}")
+
         language_code = job.source_language.value if job.source_language.value != "en" else None
-        result = await whisper_provider.process(job.audio_file_path, language_code)
+        result = None
+        last_error = None
+
+        try:
+            groq_provider = AIProviderFactory.get_whisper_provider(use_groq=True)
+            result = await groq_provider.process(job.audio_file_path, language_code)
+        except Exception as groq_error:
+            last_error = groq_error
+            logger.warning(f"Job {job_id}: GROQ Whisper failed, trying OpenAI fallback: {groq_error}")
+            if settings.openai_api_key not in ("", "not-set"):
+                openai_provider = AIProviderFactory.get_whisper_provider(use_groq=False)
+                result = await openai_provider.process(job.audio_file_path, language_code)
+            else:
+                raise groq_error
+
+        if result is None:
+            raise last_error or RuntimeError("Speech-to-text returned no result")
         
         # Save transcript
         job_dir = file_service.get_job_directory(job_id)

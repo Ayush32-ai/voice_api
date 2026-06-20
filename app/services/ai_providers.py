@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
+import asyncio
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 from app.config import settings
@@ -9,6 +10,8 @@ import os
 from groq import Groq
 
 logger = logging.getLogger(__name__)
+
+MAX_WHISPER_FILE_BYTES = 24 * 1024 * 1024
 
 class AIProvider(ABC):
     """Abstract base class for AI service providers"""
@@ -22,6 +25,29 @@ class GroqWhisperProvider(AIProvider):
     
     def __init__(self):
         self.client = Groq(api_key=settings.groq_api_key)
+
+    def _validate_audio_file(self, audio_file_path: str) -> None:
+        if not os.path.exists(audio_file_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_file_path}")
+
+        size = os.path.getsize(audio_file_path)
+        if size == 0:
+            raise ValueError("Audio file is empty after extraction")
+        if size > MAX_WHISPER_FILE_BYTES:
+            raise ValueError(
+                f"Audio file too large for GROQ Whisper ({size} bytes, max {MAX_WHISPER_FILE_BYTES})"
+            )
+
+    def _transcribe_sync(self, audio_file_path: str, language: str | None):
+        with open(audio_file_path, "rb") as audio_file:
+            kwargs = {
+                "file": audio_file,
+                "model": "whisper-large-v3",
+                "response_format": "verbose_json",
+            }
+            if language:
+                kwargs["language"] = language
+            return self.client.audio.transcriptions.create(**kwargs)
     
     @retry(
         stop=stop_after_attempt(3),
@@ -30,22 +56,23 @@ class GroqWhisperProvider(AIProvider):
     async def process(self, audio_file_path: str, language: str = None) -> Dict[str, Any]:
         """Convert audio to text using GROQ Whisper"""
         try:
-            with open(audio_file_path, "rb") as audio_file:
-                # Use GROQ's whisper-large-v3 model
-                transcription = self.client.audio.transcriptions.create(
-                    file=audio_file,
-                    model="whisper-large-v3",
-                    language=language,
-                    response_format="verbose_json"
-                )
+            if settings.groq_api_key in ("", "not-set"):
+                raise ValueError("GROQ_API_KEY is not configured")
+
+            self._validate_audio_file(audio_file_path)
+            transcription = await asyncio.to_thread(
+                self._transcribe_sync,
+                audio_file_path,
+                language,
+            )
                 
-                logger.info(f"GROQ Whisper transcription completed for {audio_file_path}")
+            logger.info(f"GROQ Whisper transcription completed for {audio_file_path}")
                 
-                return {
-                    "text": transcription.text,
-                    "segments": getattr(transcription, 'segments', []),
-                    "duration": getattr(transcription, 'duration', 0)
-                }
+            return {
+                "text": transcription.text,
+                "segments": getattr(transcription, 'segments', []),
+                "duration": getattr(transcription, 'duration', 0)
+            }
         
         except Exception as e:
             logger.error(f"GROQ Whisper API error: {str(e)}")

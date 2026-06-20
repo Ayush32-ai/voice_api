@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -11,6 +12,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+MAX_WHISPER_FILE_BYTES = 24 * 1024 * 1024
+
 
 class FileService:
     """Service for handling file operations and media processing."""
@@ -20,6 +23,10 @@ class FileService:
         self.temp_dir = Path(settings.temp_dir)
         self.upload_dir.mkdir(exist_ok=True, parents=True)
         self.temp_dir.mkdir(exist_ok=True, parents=True)
+        self.ffmpeg_path = shutil.which("ffmpeg")
+        self.ffprobe_path = shutil.which("ffprobe")
+        if not self.ffmpeg_path:
+            logger.error("ffmpeg not found in PATH - audio/video processing will fail")
 
     async def _run_command(self, cmd: list[str], error_prefix: str) -> None:
         process = await asyncio.create_subprocess_exec(
@@ -29,7 +36,14 @@ class FileService:
         )
         _, stderr = await process.communicate()
         if process.returncode != 0:
-            raise RuntimeError(f"{error_prefix}: {stderr.decode()}")
+            detail = stderr.decode(errors="replace").strip() or "unknown ffmpeg error"
+            raise RuntimeError(f"{error_prefix}: {detail}")
+
+    def _require_ffmpeg(self) -> None:
+        if not self.ffmpeg_path:
+            raise RuntimeError(
+                "ffmpeg is not installed. Railway/Docker must include the ffmpeg package."
+            )
 
     async def save_upload_file(self, file_content: bytes, filename: str, job_id: str) -> str:
         try:
@@ -50,8 +64,10 @@ class FileService:
 
     async def get_video_info(self, video_path: str) -> Dict[str, Any]:
         try:
+            if not self.ffprobe_path:
+                raise RuntimeError("ffprobe is not installed")
             cmd = [
-                "ffprobe",
+                self.ffprobe_path,
                 "-v",
                 "quiet",
                 "-print_format",
@@ -103,33 +119,85 @@ class FileService:
 
     async def extract_audio(self, video_path: str, job_id: str) -> Tuple[str, float]:
         try:
-            job_dir = Path(video_path).parent
-            audio_path = job_dir / "extracted_audio.wav"
+            self._require_ffmpeg()
+            if not os.path.exists(video_path):
+                raise FileNotFoundError(f"Video file not found: {video_path}")
 
+            job_dir = Path(video_path).parent
+            audio_path = job_dir / "extracted_audio.mp3"
+
+            # MP3 keeps files small enough for GROQ Whisper (25MB limit)
             await self._run_command(
                 [
-                    "ffmpeg",
+                    self.ffmpeg_path,
                     "-i",
                     video_path,
                     "-vn",
                     "-acodec",
-                    "pcm_s16le",
+                    "libmp3lame",
                     "-ar",
                     "16000",
                     "-ac",
                     "1",
+                    "-b:a",
+                    "64k",
                     "-y",
                     str(audio_path),
                 ],
                 "FFmpeg audio extraction failed",
             )
 
+            audio_path = await self._ensure_whisper_compatible(audio_path)
             duration = await self._get_audio_duration(str(audio_path))
-            logger.info(f"Audio extracted: {audio_path} (duration: {duration}s)")
+
+            size = os.path.getsize(audio_path)
+            if size == 0:
+                raise RuntimeError("Extracted audio file is empty")
+
+            logger.info(
+                f"Audio extracted: {audio_path} (duration: {duration}s, size: {size} bytes)"
+            )
             return str(audio_path), duration
         except Exception as e:
             logger.error(f"Error extracting audio: {str(e)}")
             raise
+
+    async def _ensure_whisper_compatible(self, audio_path: Path) -> Path:
+        """Re-compress audio if it exceeds the Whisper API size limit."""
+        size = os.path.getsize(audio_path)
+        if size <= MAX_WHISPER_FILE_BYTES:
+            return audio_path
+
+        compressed_path = audio_path.with_name("extracted_audio_compressed.mp3")
+        logger.info(
+            f"Audio file is {size} bytes; re-compressing for Whisper ({MAX_WHISPER_FILE_BYTES} byte limit)"
+        )
+        await self._run_command(
+            [
+                self.ffmpeg_path,
+                "-i",
+                str(audio_path),
+                "-acodec",
+                "libmp3lame",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-b:a",
+                "32k",
+                "-y",
+                str(compressed_path),
+            ],
+            "FFmpeg audio compression failed",
+        )
+
+        compressed_size = os.path.getsize(compressed_path)
+        if compressed_size > MAX_WHISPER_FILE_BYTES:
+            raise RuntimeError(
+                f"Audio still too large after compression ({compressed_size} bytes). "
+                "Try a shorter video."
+            )
+        return compressed_path
 
     async def merge_audio_video(
         self, original_video_path: str, new_audio_path: str, job_id: str
@@ -140,7 +208,7 @@ class FileService:
 
             await self._run_command(
                 [
-                    "ffmpeg",
+                    self.ffmpeg_path,
                     "-i",
                     original_video_path,
                     "-i",
@@ -170,8 +238,10 @@ class FileService:
 
     async def _get_audio_duration(self, audio_path: str) -> float:
         try:
+            if not self.ffprobe_path:
+                return 0.0
             cmd = [
-                "ffprobe",
+                self.ffprobe_path,
                 "-v",
                 "error",
                 "-show_entries",

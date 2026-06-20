@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
+import shutil
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -105,6 +106,14 @@ async def health_check():
         "status": "healthy" if redis_healthy else "unhealthy",
         "url": settings.redis_url
     }
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    health_status["services"]["ffmpeg"] = {
+        "status": "healthy" if ffmpeg_path else "unhealthy",
+        "path": ffmpeg_path
+    }
+    if not ffmpeg_path:
+        health_status["status"] = "degraded"
     
     # Check Database
     try:
